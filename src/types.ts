@@ -57,3 +57,9 @@ export interface MonthSummary {
   count: number;
   byMajor: MajorTotal[];
 }
+
+export interface TrendPoint {
+  month: string;
+  totalCents: number;
+  count: number;
+}

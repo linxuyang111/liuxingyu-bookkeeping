@@ -6,6 +6,7 @@ import type {
   BillFilters,
   Category,
   MonthSummary,
+  TrendPoint,
   UpdateCategoryInput,
 } from "./types";
 
@@ -29,3 +30,9 @@ export const archiveCategory = (id: number) =>
 
 export const getMonthSummary = (month: string) =>
   invoke<MonthSummary>("get_month_summary", { month });
+export const getYearSummary = (year: string) =>
+  invoke<MonthSummary>("get_year_summary", { year });
+export const getTrend = (months: number) =>
+  invoke<TrendPoint[]>("get_trend", { months });
+export const exportExcel = (path: string) =>
+  invoke<number>("export_excel", { path });

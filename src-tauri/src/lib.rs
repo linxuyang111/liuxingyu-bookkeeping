@@ -351,54 +351,158 @@ fn archive_category(state: tauri::State<Db>, id: i64) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-fn get_month_summary(state: tauri::State<Db>, month: String) -> Result<MonthSummary, String> {
-    let conn = state.0.lock().map_err(|e| e.to_string())?;
-    let (total_cents, count): (i64, i64) = conn
-        .query_row(
-            "SELECT COALESCE(SUM(amount_cents), 0), COUNT(*) FROM bills WHERE substr(bill_date, 1, 7) = ?1",
-            [&month],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .map_err(|e| e.to_string())?;
-    let mut stmt = conn
-        .prepare(
-            "SELECT COALESCE(p.id, c.id),
-                    CASE WHEN p.id IS NULL THEN c.name ELSE p.name END,
-                    CASE WHEN p.id IS NULL THEN c.icon ELSE p.icon END,
-                    SUM(b.amount_cents)
-             FROM bills b
-             JOIN categories c ON b.category_id = c.id
-             LEFT JOIN categories p ON c.parent_id = p.id
-             WHERE substr(b.bill_date, 1, 7) = ?1
-             GROUP BY 1
-             ORDER BY 4 DESC",
-        )
-        .map_err(|e| e.to_string())?;
+/// 按期间（月或年）统计：总支出、笔数、一级分类小计
+fn summary_for(
+    conn: &Connection,
+    period: &str,
+    prefix_len: u32,
+) -> rusqlite::Result<MonthSummary> {
+    let (total_cents, count): (i64, i64) = conn.query_row(
+        &format!(
+            "SELECT COALESCE(SUM(amount_cents), 0), COUNT(*) FROM bills WHERE substr(bill_date, 1, {}) = ?1",
+            prefix_len
+        ),
+        [period],
+        |r| Ok((r.get(0)?, r.get(1)?)),
+    )?;
+    let mut stmt = conn.prepare(&format!(
+        "SELECT COALESCE(p.id, c.id),
+                CASE WHEN p.id IS NULL THEN c.name ELSE p.name END,
+                CASE WHEN p.id IS NULL THEN c.icon ELSE p.icon END,
+                SUM(b.amount_cents)
+         FROM bills b
+         JOIN categories c ON b.category_id = c.id
+         LEFT JOIN categories p ON c.parent_id = p.id
+         WHERE substr(b.bill_date, 1, {}) = ?1
+         GROUP BY 1
+         ORDER BY 4 DESC",
+        prefix_len
+    ))?;
     let by_major = stmt
-        .query_map([&month], |r| {
+        .query_map([period], |r| {
             Ok(MajorTotal {
                 category_id: r.get(0)?,
                 name: r.get(1)?,
                 icon: r.get(2)?,
                 total_cents: r.get(3)?,
             })
-        })
-        .map_err(|e| e.to_string())?;
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(MonthSummary {
-        month,
+        month: period.to_string(),
         total_cents,
         count,
-        by_major: by_major
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?,
+        by_major,
     })
+}
+
+#[tauri::command]
+fn get_month_summary(state: tauri::State<Db>, month: String) -> Result<MonthSummary, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    summary_for(&conn, &month, 7).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn get_year_summary(state: tauri::State<Db>, year: String) -> Result<MonthSummary, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    summary_for(&conn, &year, 4).map_err(|e| e.to_string())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrendPoint {
+    month: String,
+    total_cents: i64,
+    count: i64,
+}
+
+#[tauri::command]
+fn get_trend(state: tauri::State<Db>, months: i64) -> Result<Vec<TrendPoint>, String> {
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT substr(bill_date, 1, 7) AS m, SUM(amount_cents), COUNT(*)
+             FROM bills
+             GROUP BY m
+             ORDER BY m DESC
+             LIMIT ?1",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([months], |r| {
+            Ok(TrendPoint {
+                month: r.get(0)?,
+                total_cents: r.get(1)?,
+                count: r.get(2)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())
+}
+
+/// 导出全部账单为 Excel 文件，返回导出的账单条数
+#[tauri::command]
+fn export_excel(state: tauri::State<Db>, path: String) -> Result<i64, String> {
+    use rust_xlsxwriter::{Format, FormatAlign, Workbook};
+
+    let conn = state.0.lock().map_err(|e| e.to_string())?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT b.bill_date, c.name, p.name, b.amount_cents, b.note
+             FROM bills b
+             JOIN categories c ON b.category_id = c.id
+             LEFT JOIN categories p ON c.parent_id = p.id
+             ORDER BY b.bill_date DESC, b.id DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, Option<String>, i64, String)> = stmt
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+
+    let mut workbook = Workbook::new();
+    let worksheet = workbook.add_worksheet();
+    worksheet.set_name("账单").map_err(|e| e.to_string())?;
+
+    let header_fmt = Format::new().set_bold().set_align(FormatAlign::Center);
+    let money_fmt = Format::new().set_num_format("0.00");
+    let headers = ["日期", "一级分类", "二级分类", "金额（元）", "备注"];
+    for (col, h) in headers.iter().enumerate() {
+        worksheet
+            .write_string_with_format(0, col as u16, *h, &header_fmt)
+            .map_err(|e| e.to_string())?;
+    }
+    for (i, (date, cat, parent, cents, note)) in rows.iter().enumerate() {
+        let row = (i + 1) as u32;
+        worksheet
+            .write_string(row, 0, date)
+            .map_err(|e| e.to_string())?;
+        worksheet
+            .write_string(row, 1, parent.as_deref().unwrap_or(""))
+            .map_err(|e| e.to_string())?;
+        worksheet
+            .write_string(row, 2, cat)
+            .map_err(|e| e.to_string())?;
+        worksheet
+            .write_number_with_format(row, 3, *cents as f64 / 100.0, &money_fmt)
+            .map_err(|e| e.to_string())?;
+        worksheet
+            .write_string(row, 4, note)
+            .map_err(|e| e.to_string())?;
+    }
+    worksheet.autofit();
+    workbook.save(&path).map_err(|e| e.to_string())?;
+    Ok(rows.len() as i64)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
@@ -416,7 +520,10 @@ pub fn run() {
             update_category,
             set_category_hidden,
             archive_category,
-            get_month_summary
+            get_month_summary,
+            get_year_summary,
+            get_trend,
+            export_excel
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
