@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import { ElMessage } from "element-plus";
-import { addBill, getCategories } from "../api";
-import type { Category } from "../types";
+import { addBill, getCategories, updateBill } from "../api";
+import type { Bill, Category } from "../types";
 import { todayStr } from "../utils";
 
-const props = defineProps<{ modelValue: boolean }>();
+const props = defineProps<{
+  modelValue: boolean;
+  editBill: Bill | null;
+}>();
 const emit = defineEmits<{
   (e: "update:modelValue", v: boolean): void;
   (e: "saved"): void;
@@ -31,6 +34,7 @@ const subs = computed(() =>
   categories.value.filter((c) => c.parentId === majorId.value && !c.hidden)
 );
 
+// 一级分类只有一个二级小类时自动选中
 watch(majorId, (id) => {
   const list = categories.value.filter((c) => c.parentId === id && !c.hidden);
   subId.value = list.length === 1 ? list[0].id : undefined;
@@ -42,7 +46,29 @@ async function loadCategories() {
     majorId.value = majors.value[0].id;
   }
 }
-onMounted(loadCategories);
+
+async function applyEdit() {
+  const bill = props.editBill;
+  if (!bill) return;
+  const cat = categories.value.find((c) => c.id === bill.categoryId);
+  if (cat) {
+    majorId.value = cat.parentId ?? cat.id;
+    // 等 watch(majorId) 的单小类自动选中逻辑先执行完，再覆盖为账单实际的小类
+    await nextTick();
+    subId.value = cat.parentId ? cat.id : undefined;
+  }
+  amount.value = bill.amountCents / 100;
+  billDate.value = bill.billDate;
+  note.value = bill.note;
+}
+
+watch(visible, async (v) => {
+  if (!v) return;
+  await loadCategories();
+  if (props.editBill) {
+    await applyEdit();
+  }
+});
 
 const canSave = computed(
   () => !!amount.value && amount.value > 0 && !!subId.value
@@ -52,17 +78,25 @@ async function save() {
   if (!canSave.value || saving.value) return;
   saving.value = true;
   try {
-    await addBill({
+    const input = {
       amountCents: Math.round(amount.value! * 100),
       categoryId: subId.value!,
       billDate: billDate.value,
       note: note.value.trim(),
-    });
-    ElMessage.success("已记账");
+    };
+    if (props.editBill) {
+      await updateBill(props.editBill.id, input);
+      ElMessage.success("已保存修改");
+    } else {
+      await addBill(input);
+      ElMessage.success("已记账");
+    }
     emit("saved");
     visible.value = false;
-    amount.value = undefined;
-    note.value = "";
+    if (!props.editBill) {
+      amount.value = undefined;
+      note.value = "";
+    }
   } catch (err) {
     ElMessage.error(String(err));
   } finally {
@@ -78,7 +112,7 @@ function close() {
 <template>
   <el-dialog
     v-model="visible"
-    title="记一笔"
+    :title="editBill ? '编辑账单' : '记一笔'"
     width="420px"
     :close-on-click-modal="false"
   >

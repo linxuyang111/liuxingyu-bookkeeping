@@ -26,3 +26,34 @@ export interface AddBillInput {
   billDate: string;
   note: string;
 }
+
+export interface BillFilters {
+  month?: string;
+  categoryId?: number;
+  keyword?: string;
+}
+
+export interface AddCategoryInput {
+  name: string;
+  icon?: string;
+  parentId?: number;
+}
+
+export interface UpdateCategoryInput {
+  name: string;
+  icon?: string;
+}
+
+export interface MajorTotal {
+  categoryId: number;
+  name: string;
+  icon: string;
+  totalCents: number;
+}
+
+export interface MonthSummary {
+  month: string;
+  totalCents: number;
+  count: number;
+  byMajor: MajorTotal[];
+}

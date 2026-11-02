@@ -1,10 +1,21 @@
 <script setup lang="ts">
 import { provide, ref } from "vue";
 import AddBillDialog from "./components/AddBillDialog.vue";
+import type { Bill } from "./types";
 
 const dialogVisible = ref(false);
+const editBill = ref<Bill | null>(null);
 const refreshKey = ref(0);
 provide("refreshKey", refreshKey);
+provide("openEdit", (bill: Bill) => {
+  editBill.value = bill;
+  dialogVisible.value = true;
+});
+
+function openAdd() {
+  editBill.value = null;
+  dialogVisible.value = true;
+}
 
 function onSaved() {
   refreshKey.value++;
@@ -25,8 +36,8 @@ function onSaved() {
     <main class="content">
       <router-view />
     </main>
-    <button class="fab" title="记一笔" @click="dialogVisible = true">＋</button>
-    <AddBillDialog v-model="dialogVisible" @saved="onSaved" />
+    <button class="fab" title="记一笔" @click="openAdd">＋</button>
+    <AddBillDialog v-model="dialogVisible" :edit-bill="editBill" @saved="onSaved" />
   </div>
 </template>
 
