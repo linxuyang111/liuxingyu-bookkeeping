@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(git init *)"
+      "Bash(git init *)",
+      "Bash(npm --version)",
+      "Bash(rustc --version)",
+      "Bash(cargo --version)",
+      "Read(//c/Program Files \\\\\\(x86\\\\\\)/Microsoft/EdgeWebView/Application/**)",
+      "Read(//c/Program Files \\\\\\(x86\\\\\\)/Microsoft Visual Studio/Installer/**)"
     ]
   }
 }
