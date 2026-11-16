@@ -43,7 +43,7 @@ async function doExport() {
     <div class="card">
       <div class="card-title">🌠 关于流星雨记账</div>
       <p class="card-desc">
-        版本 0.1.0 · Windows 桌面个人记账应用<br />
+        版本 2.0.0 · Windows 桌面个人记账应用<br />
         本地存储 · 无需联网 · 数据只属于你
       </p>
     </div>
