@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onMounted, ref, type Ref } from "vue";
+import { computed, inject, onMounted, ref, watch, type Ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
 import {
   addCategory,
@@ -13,9 +13,11 @@ import type { Category } from "../types";
 const EMOJI_OPTIONS = [
   "🍜", "🚕", "🛒", "🏠", "🎮", "💊", "📚", "🎁", "📦",
   "☕", "🍰", "✈️", "🐶", "💄", "🏋️", "🧧", "🌷", "👶",
+  "💰", "📈", "💵", "🪙", "💻", "🎉",
 ];
 
 const categories = ref<Category[]>([]);
+const kind = ref<0 | 1>(0);
 const selectedMajorId = ref<number>();
 const loading = ref(false);
 
@@ -23,7 +25,7 @@ const refreshKey = inject<Ref<number>>("refreshKey", ref(0));
 
 const majors = computed(() =>
   categories.value
-    .filter((c) => c.parentId === null)
+    .filter((c) => c.parentId === null && c.kind === kind.value)
     .sort((a, b) => a.sortOrder - b.sortOrder)
 );
 
@@ -82,7 +84,11 @@ async function submitForm() {
   try {
     const { mode, target } = formState.value;
     if (mode === "addMajor") {
-      await addCategory({ name: formName.value.trim(), icon: formIcon.value });
+      await addCategory({
+        name: formName.value.trim(),
+        icon: formIcon.value,
+        kind: kind.value,
+      });
       ElMessage.success("已添加一级分类");
     } else if (mode === "renameMajor" && target) {
       await updateCategory(target.id, {
@@ -94,6 +100,7 @@ async function submitForm() {
       await addCategory({
         name: formName.value.trim(),
         parentId: selectedMajorId.value,
+        kind: kind.value,
       });
       ElMessage.success("已添加二级分类");
     } else if (mode === "renameSub" && target) {
@@ -162,13 +169,20 @@ async function load() {
   }
 }
 onMounted(load);
+watch(kind, load);
 </script>
 
 <template>
+  <div class="kind-toggle">
+    <el-radio-group v-model="kind">
+      <el-radio-button :value="0">支出分类</el-radio-button>
+      <el-radio-button :value="1">收入分类</el-radio-button>
+    </el-radio-group>
+  </div>
   <div v-loading="loading" class="cat-layout">
     <!-- 左栏：一级大类 -->
     <div class="left-panel">
-      <div class="panel-title">一级分类</div>
+      <div class="panel-title">{{ kind === 0 ? "支出一级分类" : "收入一级分类" }}</div>
       <div
         v-for="m in majors"
         :key="m.id"
@@ -282,6 +296,9 @@ onMounted(load);
 </template>
 
 <style scoped>
+.kind-toggle {
+  margin-bottom: 16px;
+}
 .cat-layout {
   display: flex;
   gap: 20px;

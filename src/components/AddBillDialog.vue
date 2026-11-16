@@ -20,6 +20,7 @@ const visible = computed({
 });
 
 const categories = ref<Category[]>([]);
+const billType = ref<0 | 1>(0);
 const amount = ref<number>();
 const majorId = ref<number>();
 const subId = ref<number>();
@@ -28,7 +29,9 @@ const note = ref("");
 const saving = ref(false);
 
 const majors = computed(() =>
-  categories.value.filter((c) => c.parentId === null && !c.hidden)
+  categories.value.filter(
+    (c) => c.parentId === null && !c.hidden && c.kind === billType.value
+  )
 );
 const subs = computed(() =>
   categories.value.filter((c) => c.parentId === majorId.value && !c.hidden)
@@ -38,6 +41,15 @@ const subs = computed(() =>
 watch(majorId, (id) => {
   const list = categories.value.filter((c) => c.parentId === id && !c.hidden);
   subId.value = list.length === 1 ? list[0].id : undefined;
+});
+
+// 切换支出/收入时，分类自动换到对应体系
+watch(billType, () => {
+  const list = categories.value.filter(
+    (c) => c.parentId === null && !c.hidden && c.kind === billType.value
+  );
+  majorId.value = list[0]?.id;
+  subId.value = undefined;
 });
 
 async function loadCategories() {
@@ -64,7 +76,15 @@ async function applyEdit() {
 
 watch(visible, async (v) => {
   if (!v) return;
+  billType.value = props.editBill ? (props.editBill.billType as 0 | 1) : 0;
   await loadCategories();
+  // 兜底：确保已选一级分类属于当前收支类型
+  const list = categories.value.filter(
+    (c) => c.parentId === null && !c.hidden && c.kind === billType.value
+  );
+  if (!list.some((m) => m.id === majorId.value)) {
+    majorId.value = list[0]?.id;
+  }
   if (props.editBill) {
     await applyEdit();
   }
@@ -80,6 +100,7 @@ async function save() {
   try {
     const input = {
       amountCents: Math.round(amount.value! * 100),
+      billType: billType.value,
       categoryId: subId.value!,
       billDate: billDate.value,
       note: note.value.trim(),
@@ -116,6 +137,13 @@ function close() {
     width="420px"
     :close-on-click-modal="false"
   >
+    <div class="field">
+      <label>类型</label>
+      <el-radio-group v-model="billType" class="type-toggle">
+        <el-radio-button :value="0">支出</el-radio-button>
+        <el-radio-button :value="1">收入</el-radio-button>
+      </el-radio-group>
+    </div>
     <div class="field">
       <label>金额（元）</label>
       <el-input-number
@@ -188,6 +216,16 @@ function close() {
   margin-bottom: 6px;
   font-size: 13px;
   color: #606266;
+}
+.type-toggle {
+  display: flex;
+  width: 100%;
+}
+.type-toggle :deep(.el-radio-button) {
+  flex: 1;
+}
+.type-toggle :deep(.el-radio-button__inner) {
+  width: 100%;
 }
 .amount-input {
   width: 100%;

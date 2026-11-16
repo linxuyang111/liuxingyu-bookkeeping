@@ -13,6 +13,7 @@ const loading = ref(false);
 
 const month = ref(todayStr().slice(0, 7));
 const filterCategoryId = ref<number>();
+const filterType = ref<0 | 1>();
 const keyword = ref("");
 let keywordTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -27,6 +28,11 @@ const monthLabel = computed(() => {
   const [y, m] = month.value.split("-").map(Number);
   return `${y}年${m}月`;
 });
+
+/** 结余 = 收入 - 支出（单位：分，可为负） */
+const balance = computed(
+  () => (summary.value?.incomeCents ?? 0) - (summary.value?.totalCents ?? 0)
+);
 
 const avgPerDay = computed(() => {
   if (!summary.value || summary.value.totalCents === 0) return 0;
@@ -44,7 +50,8 @@ const topMajors = computed(() => (summary.value?.byMajor ?? []).slice(0, 5));
 interface DayGroup {
   date: string;
   label: string;
-  total: number;
+  expenseTotal: number;
+  incomeTotal: number;
   bills: Bill[];
 }
 
@@ -53,10 +60,20 @@ const groups = computed<DayGroup[]>(() => {
   for (const b of bills.value) {
     let g = map.get(b.billDate);
     if (!g) {
-      g = { date: b.billDate, label: dayLabel(b.billDate), total: 0, bills: [] };
+      g = {
+        date: b.billDate,
+        label: dayLabel(b.billDate),
+        expenseTotal: 0,
+        incomeTotal: 0,
+        bills: [],
+      };
       map.set(b.billDate, g);
     }
-    g.total += b.amountCents;
+    if (b.billType === 1) {
+      g.incomeTotal += b.amountCents;
+    } else {
+      g.expenseTotal += b.amountCents;
+    }
     g.bills.push(b);
   }
   return [...map.values()];
@@ -70,6 +87,7 @@ async function load() {
         month: month.value,
         categoryId: filterCategoryId.value,
         keyword: keyword.value.trim() || undefined,
+        billType: filterType.value,
       }),
       getCategories(),
       getMonthSummary(month.value),
@@ -85,7 +103,7 @@ async function load() {
 }
 
 onMounted(load);
-watch([month, filterCategoryId], load);
+watch([month, filterCategoryId, filterType], load);
 watch(refreshKey, load);
 watch(keyword, () => {
   clearTimeout(keywordTimer);
@@ -128,19 +146,24 @@ function edit(bill: Bill) {
   <div v-loading="loading">
     <!-- 月度汇总卡片 -->
     <div class="summary-row">
+      <div class="stat-card stat-income">
+        <div class="stat-label">{{ monthLabel }}总收入</div>
+        <div class="stat-value">
+          ¥{{ fmtMoney(summary?.incomeCents ?? 0) }}
+        </div>
+      </div>
       <div class="stat-card stat-main">
         <div class="stat-label">{{ monthLabel }}总支出</div>
         <div class="stat-value stat-value-big">
           ¥{{ fmtMoney(summary?.totalCents ?? 0) }}
         </div>
+        <div class="stat-sub">
+          日均 ¥{{ fmtMoney(avgPerDay) }} · {{ summary?.count ?? 0 }} 笔
+        </div>
       </div>
-      <div class="stat-card">
-        <div class="stat-label">日均支出</div>
-        <div class="stat-value">¥{{ fmtMoney(avgPerDay) }}</div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-label">记账笔数</div>
-        <div class="stat-value">{{ summary?.count ?? 0 }} 笔</div>
+      <div class="stat-card" :class="balance >= 0 ? 'stat-positive' : 'stat-negative'">
+        <div class="stat-label">{{ monthLabel }}结余</div>
+        <div class="stat-value">¥{{ fmtMoney(balance) }}</div>
       </div>
     </div>
 
@@ -171,6 +194,15 @@ function edit(bill: Bill) {
         <el-button :disabled="isCurrentMonth" @click="shiftMonth(1)">▶</el-button>
       </el-button-group>
       <el-select
+        v-model="filterType"
+        placeholder="全部类型"
+        clearable
+        class="type-filter"
+      >
+        <el-option label="支出" :value="0" />
+        <el-option label="收入" :value="1" />
+      </el-select>
+      <el-select
         v-model="filterCategoryId"
         placeholder="全部分类"
         clearable
@@ -199,7 +231,12 @@ function edit(bill: Bill) {
     <div v-for="g in groups" :key="g.date" class="day-group">
       <div class="day-header">
         <span class="day-label">{{ g.label }}</span>
-        <span class="day-total">支出 ¥{{ fmtMoney(g.total) }}</span>
+        <span class="day-total">
+          支出 ¥{{ fmtMoney(g.expenseTotal) }}
+          <template v-if="g.incomeTotal > 0">
+            · 收入 ¥{{ fmtMoney(g.incomeTotal) }}
+          </template>
+        </span>
       </div>
       <div v-for="b in g.bills" :key="b.id" class="bill-item">
         <span class="bill-icon">{{ b.categoryIcon }}</span>
@@ -209,7 +246,9 @@ function edit(bill: Bill) {
           </div>
           <div v-if="b.note" class="bill-note">{{ b.note }}</div>
         </div>
-        <span class="bill-amount">-¥{{ fmtMoney(b.amountCents) }}</span>
+        <span class="bill-amount" :class="{ income: b.billType === 1 }">
+          {{ b.billType === 1 ? "+" : "-" }}¥{{ fmtMoney(b.amountCents) }}
+        </span>
         <el-button link type="primary" class="bill-action" @click="edit(b)">
           编辑
         </el-button>
@@ -238,8 +277,18 @@ function edit(bill: Bill) {
   background: linear-gradient(135deg, #6c5ce7, #4dabf7);
 }
 .stat-main .stat-label,
-.stat-main .stat-value {
+.stat-main .stat-value,
+.stat-main .stat-sub {
   color: #fff;
+}
+.stat-income .stat-value {
+  color: #67c23a;
+}
+.stat-positive .stat-value {
+  color: #67c23a;
+}
+.stat-negative .stat-value {
+  color: #f56c6c;
 }
 .stat-label {
   font-size: 13px;
@@ -253,6 +302,11 @@ function edit(bill: Bill) {
 }
 .stat-value-big {
   font-size: 28px;
+}
+.stat-sub {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #909399;
 }
 .major-pills {
   display: flex;
@@ -284,6 +338,9 @@ function edit(bill: Bill) {
 }
 .month-picker {
   width: 130px;
+}
+.type-filter {
+  width: 120px;
 }
 .cat-filter {
   width: 160px;
@@ -338,5 +395,8 @@ function edit(bill: Bill) {
 .bill-amount {
   font-weight: 700;
   color: #f56c6c;
+}
+.bill-amount.income {
+  color: #67c23a;
 }
 </style>

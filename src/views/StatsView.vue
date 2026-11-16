@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, inject, onBeforeUnmount, onMounted, ref, watch, type Ref } from "vue";
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, ref, watch, type Ref } from "vue";
 import { ElMessage } from "element-plus";
 import * as echarts from "echarts";
 import dayjs from "dayjs";
@@ -9,11 +9,13 @@ import { fmtMoney, todayStr } from "../utils";
 
 const categories = ref<Category[]>([]);
 const summary = ref<MonthSummary | null>(null);
-const trend = ref<{ month: string; totalCents: number }[]>([]);
+const trend = ref<{ month: string; totalCents: number; incomeCents: number }[]>([]);
 const loading = ref(false);
 
 const mode = ref<"month" | "year">("month");
 const period = ref(todayStr().slice(0, 7)); // month: YYYY-MM, year: YYYY
+/** 占比与排行的收支类型：0 = 支出，1 = 收入 */
+const kindMode = ref<0 | 1>(0);
 
 const refreshKey = inject<Ref<number>>("refreshKey", ref(0));
 
@@ -62,6 +64,10 @@ async function load() {
     categories.value = cats;
     summary.value = sum;
     trend.value = fillTrend(trendData);
+    // 等 v-show 生效、图表容器可见并获得真实尺寸后再初始化/渲染，
+    // 否则图表会按隐藏容器的错误尺寸（约100px）绘制，出现「缩起来」的 bug
+    await nextTick();
+    ensureCharts();
     renderCharts();
   } catch (err) {
     ElMessage.error(String(err));
@@ -71,15 +77,43 @@ async function load() {
 }
 
 /** 补全近 12 个月中缺失的月份（无账单月份记为 0） */
-function fillTrend(points: { month: string; totalCents: number }[]) {
-  const map = new Map(points.map((p) => [p.month, p.totalCents]));
-  const result: { month: string; totalCents: number }[] = [];
+function fillTrend(
+  points: { month: string; totalCents: number; incomeCents: number }[]
+) {
+  const map = new Map(points.map((p) => [p.month, p]));
+  const result: { month: string; totalCents: number; incomeCents: number }[] = [];
   for (let i = 11; i >= 0; i--) {
     const m = dayjs().subtract(i, "month").format("YYYY-MM");
-    result.push({ month: m, totalCents: map.get(m) ?? 0 });
+    const pt = map.get(m);
+    result.push({
+      month: m,
+      totalCents: pt?.totalCents ?? 0,
+      incomeCents: pt?.incomeCents ?? 0,
+    });
   }
   return result;
 }
+
+const hasTrendData = computed(() =>
+  trend.value.some((t) => t.totalCents > 0 || t.incomeCents > 0)
+);
+
+/** 当前收支类型下的一级分类小计（供占比环图与排行共用） */
+const activeByMajor = computed(() =>
+  kindMode.value === 0
+    ? summary.value?.byMajor ?? []
+    : summary.value?.incomeByMajor ?? []
+);
+
+const hasBills = computed(() =>
+  kindMode.value === 0
+    ? (summary.value?.count ?? 0) > 0
+    : (summary.value?.incomeCount ?? 0) > 0
+);
+
+const maxTotal = computed(() =>
+  Math.max(...activeByMajor.value.map((m) => m.totalCents), 1)
+);
 
 function renderCharts() {
   if (trendChart && trendRef.value) {
@@ -89,7 +123,14 @@ function renderCharts() {
         valueFormatter: (v: unknown) =>
           "¥" + fmtMoney(Math.round(Number(v) * 100)),
       },
-      grid: { left: 64, right: 16, top: 24, bottom: 28 },
+      legend: {
+        top: 0,
+        right: 0,
+        icon: "circle",
+        itemWidth: 10,
+        textStyle: { color: "#606266", fontSize: 12 },
+      },
+      grid: { left: 64, right: 16, top: 40, bottom: 28 },
       xAxis: {
         type: "category",
         data: trend.value.map((t) => dayjs(t.month + "-01").format("YY年M月")),
@@ -104,9 +145,10 @@ function renderCharts() {
       },
       series: [
         {
+          name: "支出",
           type: "bar",
-          data: trend.value.map((t) => Math.round(t.totalCents) / 100),
-          barWidth: 18,
+          data: trend.value.map((t) => t.totalCents / 100),
+          barWidth: 14,
           itemStyle: {
             borderRadius: [6, 6, 0, 0],
             color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
@@ -115,11 +157,34 @@ function renderCharts() {
             ]),
           },
         },
+        {
+          name: "收入",
+          type: "bar",
+          data: trend.value.map((t) => t.incomeCents / 100),
+          barWidth: 14,
+          itemStyle: {
+            borderRadius: [6, 6, 0, 0],
+            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
+              { offset: 0, color: "#67c23a" },
+              { offset: 1, color: "#95de64" },
+            ]),
+          },
+        },
+        {
+          name: "结余",
+          type: "line",
+          data: trend.value.map((t) => (t.incomeCents - t.totalCents) / 100),
+          smooth: true,
+          symbol: "circle",
+          symbolSize: 6,
+          lineStyle: { color: "#f0932b", width: 2 },
+          itemStyle: { color: "#f0932b" },
+        },
       ],
     });
   }
   if (pieChart && pieRef.value) {
-    const data = (summary.value?.byMajor ?? []).map((m) => ({
+    const data = activeByMajor.value.map((m) => ({
       name: `${m.icon} ${m.name}`,
       value: m.totalCents / 100,
       itemStyle: { color: colorOfMajor(m.categoryId) },
@@ -153,9 +218,17 @@ function renderCharts() {
   }
 }
 
+/** 容器可见后才初始化图表（挂载时容器因 v-show 隐藏，尺寸取不到真实值） */
+function ensureCharts() {
+  if (!trendChart && trendRef.value && hasTrendData.value) {
+    trendChart = echarts.init(trendRef.value);
+  }
+  if (!pieChart && pieRef.value && hasBills.value) {
+    pieChart = echarts.init(pieRef.value);
+  }
+}
+
 onMounted(() => {
-  trendChart = echarts.init(trendRef.value!);
-  pieChart = echarts.init(pieRef.value!);
   window.addEventListener("resize", onResize);
   load();
 });
@@ -165,22 +238,18 @@ onBeforeUnmount(() => {
   pieChart?.dispose();
 });
 watch([mode, period], load);
+watch(kindMode, renderCharts);
 watch(refreshKey, load);
-
-const hasBills = computed(() => (summary.value?.count ?? 0) > 0);
-const maxTotal = computed(() =>
-  Math.max(...(summary.value?.byMajor ?? []).map((m) => m.totalCents), 1)
-);
 </script>
 
 <template>
   <div v-loading="loading">
-    <!-- 支出趋势（近 12 个月） -->
+    <!-- 收支趋势（近 12 个月） -->
     <div class="card">
-      <div class="card-title">📈 支出趋势（近 12 个月）</div>
-      <div v-show="trend.some((t) => t.totalCents > 0)" ref="trendRef" class="chart trend-chart"></div>
+      <div class="card-title">📈 收支趋势（近 12 个月）</div>
+      <div v-show="hasTrendData" ref="trendRef" class="chart trend-chart"></div>
       <el-empty
-        v-if="!trend.some((t) => t.totalCents > 0)"
+        v-if="!hasTrendData"
         description="还没有账单数据，先记几笔再来看看吧"
       />
     </div>
@@ -189,8 +258,12 @@ const maxTotal = computed(() =>
       <!-- 分类占比 -->
       <div class="card half">
         <div class="card-title">
-          🍩 分类占比
+          🍩 {{ kindMode === 0 ? "支出构成" : "收入构成" }}
           <div class="period-control">
+            <el-radio-group v-model="kindMode" size="small">
+              <el-radio-button :value="0">支出</el-radio-button>
+              <el-radio-button :value="1">收入</el-radio-button>
+            </el-radio-group>
             <el-radio-group v-model="mode" size="small">
               <el-radio-button value="month">月</el-radio-button>
               <el-radio-button value="year">年</el-radio-button>
@@ -209,19 +282,21 @@ const maxTotal = computed(() =>
         <div v-show="hasBills" ref="pieRef" class="chart pie-chart"></div>
         <el-empty
           v-if="!hasBills"
-          :description="`${periodLabel}没有账单数据`"
+          :description="`${periodLabel}没有${kindMode === 0 ? '支出' : '收入'}数据`"
         />
       </div>
 
       <!-- 分类排行 -->
       <div class="card half">
-        <div class="card-title">🏆 分类排行（{{ periodLabel }}）</div>
+        <div class="card-title">
+          🏆 {{ kindMode === 0 ? "支出" : "收入" }}排行（{{ periodLabel }}）
+        </div>
         <el-empty
           v-if="!hasBills"
-          :description="`${periodLabel}没有账单数据`"
+          :description="`${periodLabel}没有${kindMode === 0 ? '支出' : '收入'}数据`"
         />
         <div v-else class="rank-list">
-          <div v-for="(m, i) in summary?.byMajor" :key="m.categoryId" class="rank-row">
+          <div v-for="(m, i) in activeByMajor" :key="m.categoryId" class="rank-row">
             <span class="rank-no" :class="{ top: i < 3 }">{{ i + 1 }}</span>
             <span class="rank-icon">{{ m.icon }}</span>
             <div class="rank-main">
